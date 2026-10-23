@@ -1,0 +1,13 @@
+import 'dotenv/config';import fs from 'fs';import {parse} from 'csv-parse/sync';import {createClient} from '@supabase/supabase-js';
+const db=createClient(process.env.NEXT_PUBLIC_SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY);
+const rows=parse(fs.readFileSync(process.argv[2]||'data/geo.csv','utf8'),{columns:true,bom:true,skip_empty_lines:true,trim:true});
+const title=s=>s.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
+const ok=async p=>{const {data,error}=await p;if(error)throw error;return data};
+const lgas=await ok(db.from('lgas').upsert([...new Set(rows.map(r=>title(r.lga_name)))].map(name=>({name})),{onConflict:'name'}).select());
+const lid=Object.fromEntries(lgas.map(l=>[l.name,l.id]));
+const wk=new Map();rows.forEach(r=>wk.set(title(r.lga_name)+'|'+r.ward_name,{lga_id:lid[title(r.lga_name)],name:r.ward_name,official_reference_code:`${r.state_code}/${r.lga_code}/${r.ward_code}`}));
+const wards=await ok(db.from('wards').upsert([...wk.values()],{onConflict:'lga_id,name'}).select());
+const wid=Object.fromEntries(wards.map(w=>[w.lga_id+'|'+w.name,w.id]));
+const pus=rows.map(r=>({ward_id:wid[lid[title(r.lga_name)]+'|'+r.ward_name],name:r.pu_name,official_reference_code:r.full_code,location_reference:r.pu_location||null}));
+for(let i=0;i<pus.length;i+=500)await ok(db.from('polling_units').upsert(pus.slice(i,i+500),{onConflict:'official_reference_code'}));
+console.log(`Imported ${lgas.length} LGAs, ${wards.length} wards, ${pus.length} polling units.`);
